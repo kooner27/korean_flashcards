@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Convert each Quizlet-exported TAB file (saved with .csv) *in place*
-into a standards-compliant two-column CSV.
+Convert Quizlet-exported TAB-separated files (.csv) to standards-compliant two-column CSV.
 
+Supports:
+• Single file or directory of files
 • Tabs → single comma between Term and Definition
-• Any commas inside a field → field is wrapped in "…" and internal quotes doubled
-• Works safely: writes to a temp file, then atomically replaces the original
+• Internal commas/quotes → fields wrapped in quotes and quotes doubled
+• Safe overwrite using a temp file
 """
 
 import os
@@ -13,14 +14,42 @@ import sys
 import tempfile
 
 def quote_field(text: str) -> str:
-    """Return RFC-4180-safe CSV field."""
     text = text.strip()
-    # Strip existing wrapper quotes, if the whole field was already quoted
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1]
-    # Escape interior double-quotes by doubling them
     text = text.replace('"', '""')
     return f'"{text}"'
+
+def convert_file(path: str) -> None:
+    if not path.lower().endswith(".csv"):
+        print(f"✖ Skipping non-csv file: {path}")
+        return
+
+    folder = os.path.dirname(path)
+    filename = os.path.basename(path)
+    fd, tmp = tempfile.mkstemp(dir=folder, suffix=".tmp")
+    os.close(fd)
+
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as r, \
+             open(tmp, "w", encoding="utf-8", newline="") as w:
+            for raw in r:
+                raw = raw.rstrip("\n\r")
+                if not raw:
+                    continue
+                parts = raw.split("\t")
+                if len(parts) < 2:
+                    continue
+                term = parts[0]
+                definition = "\t".join(parts[1:])
+                w.write(f"{quote_field(term)},{quote_field(definition)}\n")
+
+        os.replace(tmp, path)
+        print(f"✔ Overwrote {filename}")
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        print(f"✖ Failed {filename}: {e}")
 
 def convert_folder(folder: str) -> None:
     if not os.path.isdir(folder):
@@ -28,43 +57,18 @@ def convert_folder(folder: str) -> None:
         return
 
     for fname in os.listdir(folder):
-        if not fname.lower().endswith(".csv"):
-            continue
-
-        src = os.path.join(folder, fname)
-        fd, tmp = tempfile.mkstemp(dir=folder, suffix=".tmp")
-        os.close(fd)
-
-        try:
-            with open(src, "r", encoding="utf-8", newline="") as r, \
-                 open(tmp, "w", encoding="utf-8", newline="") as w:
-
-                for raw in r:
-                    raw = raw.rstrip("\n\r")
-                    if not raw:
-                        continue                    # skip blank lines
-
-                    parts = raw.split("\t")          # 1 tab = our split
-                    if len(parts) < 2:
-                        # malformed – ignore
-                        continue
-
-                    term_raw       = parts[0]
-                    definition_raw = "\t".join(parts[1:])  # re-join stray tabs
-
-                    w.write(
-                        f"{quote_field(term_raw)},{quote_field(definition_raw)}\n"
-                    )
-
-            os.replace(tmp, src)   # atomic
-            print(f"✔ Overwrote {fname}")
-        except Exception as e:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            print(f"✖ Failed {fname}: {e}")
+        if fname.lower().endswith(".csv"):
+            convert_file(os.path.join(folder, fname))
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python3 fix_quizlet_csv.py /path/to/folder")
+        print("Usage: python3 fix_quizlet_csv.py /path/to/file_or_folder")
         sys.exit(1)
-    convert_folder(sys.argv[1])
+
+    path = sys.argv[1]
+    if os.path.isfile(path):
+        convert_file(path)
+    elif os.path.isdir(path):
+        convert_folder(path)
+    else:
+        print(f'✖ "{path}" is not a valid file or directory')
